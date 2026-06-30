@@ -1,0 +1,59 @@
+name: iOS Build
+
+# Runs automatically on every push, and you can also trigger it by hand
+# from the Actions tab (the "Run workflow" button).
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # A real Mac in the cloud, with Xcode 26 / Tahoe preinstalled.
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # Installs dependencies only if the project actually uses them.
+      - name: Install dependencies (if any)
+        run: |
+          if [ -f Podfile ]; then
+            echo "CocoaPods detected — running pod install"
+            pod install --repo-update
+          elif [ -f Cartfile ]; then
+            echo "Carthage detected — bootstrapping"
+            carthage bootstrap --use-xcframeworks --platform iOS
+          else
+            echo "No CocoaPods/Carthage found — assuming SPM or no deps"
+          fi
+
+      # Prints the real scheme/target names into the log.
+      # If the build step fails saying the scheme isn't found,
+      # check this step's output and update the scheme name below.
+      - name: List schemes and targets
+        run: |
+          if [ -f SwiftWeather.xcworkspace/contents.xcworkspacedata ]; then
+            xcodebuild -list -workspace SwiftWeather.xcworkspace || true
+          else
+            xcodebuild -list -project SwiftWeather.xcodeproj || true
+          fi
+
+      - name: Build for iOS Simulator
+        run: |
+          if [ -f SwiftWeather.xcworkspace/contents.xcworkspacedata ]; then
+            CONTAINER="-workspace SwiftWeather.xcworkspace"
+          else
+            CONTAINER="-project SwiftWeather.xcodeproj"
+          fi
+          xcodebuild $CONTAINER \
+            -scheme SwiftWeather \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            clean build \
+            CODE_SIGNING_ALLOWED=NO
