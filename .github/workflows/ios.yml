@@ -1,7 +1,5 @@
 name: iOS Build
 
-# Runs automatically on every push, and you can also trigger it by hand
-# from the Actions tab (the "Run workflow" button).
 on:
   push:
     branches: [ main, master ]
@@ -9,9 +7,7 @@ on:
 
 jobs:
   build:
-    # A real Mac in the cloud, with Xcode 26 / Tahoe preinstalled.
     runs-on: macos-26
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,39 +15,56 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # Installs dependencies only if the project actually uses them.
-      - name: Install dependencies (if any)
+      - name: Locate, prepare, and build
         run: |
+          set -e
+
+          # 1) Find the Xcode workspace/project ANYWHERE in the repo
+          #    (ignores the auto-generated one inside .xcodeproj and the .git folder)
+          WORKSPACE=$(find . -name "*.xcworkspace" -not -path "*/project.xcworkspace" -not -path "*/.git/*" | head -n 1)
+          PROJECT=$(find . -name "*.xcodeproj" -not -path "*/.git/*" | head -n 1)
+
+          if [ -n "$WORKSPACE" ]; then
+            DIR=$(dirname "$WORKSPACE")
+            CONTAINER="-workspace $(basename "$WORKSPACE")"
+          elif [ -n "$PROJECT" ]; then
+            DIR=$(dirname "$PROJECT")
+            CONTAINER="-project $(basename "$PROJECT")"
+          else
+            echo "::error::No .xcodeproj or .xcworkspace found. Repo layout:"
+            find . -maxdepth 3 -not -path "*/.git/*"
+            exit 1
+          fi
+
+          cd "$DIR"
+          echo "==> Working in: $(pwd)"
+          echo "==> Container: $CONTAINER"
+
+          # 2) Install dependencies only if the project uses them
           if [ -f Podfile ]; then
-            echo "CocoaPods detected — running pod install"
+            echo "==> CocoaPods detected"
             pod install --repo-update
+            WS=$(find . -maxdepth 1 -name "*.xcworkspace" -not -path "*/project.xcworkspace" | head -n 1)
+            [ -n "$WS" ] && CONTAINER="-workspace $(basename "$WS")"
           elif [ -f Cartfile ]; then
-            echo "Carthage detected — bootstrapping"
+            echo "==> Carthage detected"
             carthage bootstrap --use-xcframeworks --platform iOS
-          else
-            echo "No CocoaPods/Carthage found — assuming SPM or no deps"
           fi
 
-      # Prints the real scheme/target names into the log.
-      # If the build step fails saying the scheme isn't found,
-      # check this step's output and update the scheme name below.
-      - name: List schemes and targets
-        run: |
-          if [ -f SwiftWeather.xcworkspace/contents.xcworkspacedata ]; then
-            xcodebuild -list -workspace SwiftWeather.xcworkspace || true
+          # 3) Auto-detect the scheme name (prefers "SwiftWeather", else first found)
+          SCHEMES=$(xcodebuild $CONTAINER -list 2>/dev/null | awk '/Schemes:/{f=1;next} /^$/{f=0} f{$1=$1;print}')
+          echo "==> Available schemes:"
+          echo "$SCHEMES"
+          if echo "$SCHEMES" | grep -qx "SwiftWeather"; then
+            SCHEME="SwiftWeather"
           else
-            xcodebuild -list -project SwiftWeather.xcodeproj || true
+            SCHEME=$(echo "$SCHEMES" | head -n 1)
           fi
+          echo "==> Using scheme: $SCHEME"
 
-      - name: Build for iOS Simulator
-        run: |
-          if [ -f SwiftWeather.xcworkspace/contents.xcworkspacedata ]; then
-            CONTAINER="-workspace SwiftWeather.xcworkspace"
-          else
-            CONTAINER="-project SwiftWeather.xcodeproj"
-          fi
+          # 4) Build for the iOS Simulator (no code signing needed)
           xcodebuild $CONTAINER \
-            -scheme SwiftWeather \
+            -scheme "$SCHEME" \
             -sdk iphonesimulator \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
